@@ -42,7 +42,7 @@ CFLAGS     = @CFLAGS@ ${O_FLAG} -Wall ${INCLUDE} @HAVE_BPF@ @HAVE_REDIS@ @HAVE_P
 #
 # User and System libraries
 #
-LIBS       = ${LIBPCAP} ${LIBPFRING} ${LIBPCAP} ${LIBPFRING} `../lib/pfring_config --libs` `../libpcap/pcap-config --additional-libs --static` -lpthread @SYSLIBS@ @REDIS_LIB@ -lrt
+LIBS       = ${LIBPCAP} ${LIBPFRING} ${LIBPCAP} ${LIBPFRING} `../lib/pfring_config --libs` `../libpcap/pcap-config --additional-libs --static` -lpthread @SYSLIBS@ @REDIS_LIB@ -lrt -fpic
 
 # How to make an object file
 %.o: %.c pfutils.c
@@ -53,7 +53,7 @@ LIBS       = ${LIBPCAP} ${LIBPFRING} ${LIBPCAP} ${LIBPFRING} `../lib/pfring_conf
 # Main targets
 #
 PFPROGS   = pfcount pfcount_multichannel preflect \
-	    pfbridge alldevs pcap2nspcap \
+	    pfbridge pl2forward alldevs pcap2nspcap \
 	    pfcount_82599 pfsystest pfsend pflatency
 
 PCAPPROGS = pcount pfwrite
@@ -107,6 +107,9 @@ ptwin: ptwin.o ${LIBPFRING}
 
 pfbridge: pfbridge.o ${LIBPFRING}
 	${CC} ${CFLAGS} pfbridge.o ${LIBS} -o $@
+
+pl2forward: pl2forward.o ${LIBPFRING}
+	${CC} ${CFLAGS} pl2forward.o ${LIBS} -o $@
 
 pcount: pcount.o ${LIBPFRING}
 	${CC} ${CFLAGS} pcount.o ${LIBS} -o $@
