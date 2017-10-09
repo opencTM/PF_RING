@@ -20,9 +20,8 @@
 #include "pfutils.c"
 #include "libproc.h"
 
-
 #define	MAX_PKT_LEN	1536
-#define MAX_FILTER_LEN	1024
+#define	MAX_FILTER_LEN	1024
 
 
 static struct SELF {
@@ -71,7 +70,10 @@ static void ipint_v4(const u_int32_t ipint, u_int8_t ipv4[])
 
 static int ipstr_v4(const u_int8_t ipv4[])
 {
-	return ((ipv4[3] & 0xff) | ((ipv4[2] << 8) & 0xff00) | ((ipv4[1] << 16) & 0xff0000) | ((ipv4[0] << 24) & 0xff000000));
+	return ((ipv4[3] & 0xff) |
+		((ipv4[2] << 8) & 0xff00) |
+		((ipv4[1] << 16) & 0xff0000) |
+		((ipv4[0] << 24) & 0xff000000));
 }
 
 static void help_print(const char *name)
@@ -93,23 +95,55 @@ static void help_print(const char *name)
 	return;
 }
 
-static void debug_print(struct pfring_pkthdr hdr)
+static void info_print(void)
+{
+	pfring_card_settings setting;
+	pfring_get_card_settings(self.rx_ring, &setting);
+
+	printf("[%s] pfring_get_mtu_size: %d\n", self.name, pfring_get_mtu_size(self.rx_ring));
+	printf("[%s] pfring_get_num_rx_channles: %d\n", self.name, pfring_get_num_rx_channels(self.rx_ring));
+	printf("[%s] pfring_get_interface_speed: %dM\n", self.name, pfring_get_interface_speed(self.rx_ring));
+	printf("[%s] pfring_get_card_setting: [max_pkt_size] %d [rx_ring_slots] %d [tx_ring_slots] %d\n",
+	       self.name, setting.max_packet_size, setting.rx_ring_slots, setting.tx_ring_slots);
+
+	return;
+}
+
+static void parse_print(const u_char *pkt, const struct pfring_pkthdr hdr)
+{
+	int i = 0;
+	char buffer[4096] = {0};
+
+	pfring_print_parsed_pkt(buffer, 4096, pkt, &hdr);
+
+	printf("[%s] %s", self.name, buffer);
+
+	for (i = 0; i < hdr.caplen; i++) {
+		if (i % 0x10 == 0) { printf("0x%04x: ", i); }
+
+		printf("%02x", pkt[i]);
+
+		if ((i+1) % 0x02 == 0) { printf(" "); }
+
+		if ((i+1) % 0x10 == 0) { printf("\n"); }
+	}
+
+	printf("\n\n");
+	return;
+}
+
+static void header_print(const struct pfring_pkthdr hdr)
 {
 	u_int8_t src[4];
 	u_int8_t dst[4];
-	u_int8_t gtp_src[4];
-	u_int8_t gtp_dst[4];
-	u_int8_t lo[4] = {127, 0, 0, 1};
 
 	ipint_v4(hdr.extended_hdr.parsed_pkt.ip_src.v4, src);
 	ipint_v4(hdr.extended_hdr.parsed_pkt.ip_dst.v4, dst);
 
-	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_src.v4, gtp_src);
-	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_dst.v4, gtp_dst);
-
-	printf("[%s]: [TYPE] %04X [PROTO] %02X [SMAC] %02X:%02X:%02X:%02X:%02X:%02X [SRC] %u.%u.%u.%u:%u -> [DMAC] %02X:%02X:%02X:%02X:%02X:%02X [DST] %u.%u.%u.%u:%u\n", self.name,
+	printf("[%s] [LEN] %d [TYPE] %04x [PROTO] %02x [VLAN] %02d [SMAC] %02x:%02x:%02x:%02x:%02x:%02x [SRC] %u.%u.%u.%u:%u -> [DMAC] %02x:%02x:%02x:%02x:%02x:%02x [DST] %u.%u.%u.%u:%u\n", self.name, hdr.caplen,
 	       hdr.extended_hdr.parsed_pkt.eth_type,
 	       hdr.extended_hdr.parsed_pkt.l3_proto,
+	       hdr.extended_hdr.parsed_pkt.vlan_id,
 	       hdr.extended_hdr.parsed_pkt.smac[0],
 	       hdr.extended_hdr.parsed_pkt.smac[1],
 	       hdr.extended_hdr.parsed_pkt.smac[2],
@@ -127,7 +161,19 @@ static void debug_print(struct pfring_pkthdr hdr)
 	       dst[0], dst[1], dst[2], dst[3],
 	       hdr.extended_hdr.parsed_pkt.l4_dst_port);
 
-	printf("[%s]: [GTP_ID] %08X [GTP_PROTO] %02X [GTP_SRC] %u.%u.%u.%u:%u -> [GTP_DST] %u.%u.%u.%u:%u\n", self.name,
+	return;
+}
+
+static void gtp_print(const struct pfring_pkthdr hdr)
+{
+	u_int8_t gtp_src[4];
+	u_int8_t gtp_dst[4];
+
+	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_src.v4, gtp_src);
+	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_dst.v4, gtp_dst);
+
+	printf("[%s] [GTP_ID] %08x [GTP_PROTO] %02x [GTP_SRC] %u.%u.%u.%u:%u -> [GTP_DST] %u.%u.%u.%u:%u\n",
+	       self.name,
 	       hdr.extended_hdr.parsed_pkt.tunnel.tunnel_id,
 	       hdr.extended_hdr.parsed_pkt.tunnel.tunneled_proto,
 	       gtp_src[0], gtp_src[1], gtp_src[2], gtp_src[3],
@@ -135,15 +181,29 @@ static void debug_print(struct pfring_pkthdr hdr)
 	       gtp_dst[0], gtp_dst[1], gtp_dst[2], gtp_dst[3],
 	       hdr.extended_hdr.parsed_pkt.tunnel.tunneled_l4_dst_port);
 
-	if (0) {
-		hdr.extended_hdr.parsed_pkt.dmac[0] = 0;
-		hdr.extended_hdr.parsed_pkt.dmac[1] = 0;
-		hdr.extended_hdr.parsed_pkt.dmac[2] = 0;
-		hdr.extended_hdr.parsed_pkt.dmac[3] = 0;
-		hdr.extended_hdr.parsed_pkt.dmac[4] = 0;
-		hdr.extended_hdr.parsed_pkt.dmac[5] = 0;
-		hdr.extended_hdr.parsed_pkt.ip_dst.v4 = ipstr_v4(lo);
+	return;
+}
+
+static void payload_search(const struct pfring_pkthdr hdr)
+{
+	if (pfring_search_payload(self.rx_ring, "\x08\x06") == 0) { /* FIXME: I do not known how to use payload */
+		printf("[%s] pfring_search_payload(0806) find: ARP!\n", self.name);
+	} else if (hdr.extended_hdr.parsed_pkt.eth_type == 0x0806) { /* so, I will use packet header to check */
+		printf("[%s] pfring search eth_type(0806) find: ARP!\n", self.name);
 	}
+	return;
+}
+
+static void pkt_to_local(struct pfring_pkthdr *hdr) {
+	u_int8_t lo[4] = {127, 0, 0, 1};
+	hdr->extended_hdr.parsed_pkt.dmac[0] = 0;
+	hdr->extended_hdr.parsed_pkt.dmac[1] = 0;
+	hdr->extended_hdr.parsed_pkt.dmac[2] = 0;
+	hdr->extended_hdr.parsed_pkt.dmac[3] = 0;
+	hdr->extended_hdr.parsed_pkt.dmac[4] = 0;
+	hdr->extended_hdr.parsed_pkt.dmac[5] = 0;
+	hdr->extended_hdr.parsed_pkt.ip_dst.v4 = ipstr_v4(lo);
+	return;
 }
 
 static int sync_collect(const pid_t pid)
@@ -172,7 +232,7 @@ static void signal_alarm(const int signum)
 {
 	char num[32] = {0};
 	pfring_format_numbers((double) self.sent_pps, num, sizeof(num), 0);
-	printf("[%s]: %s pps\n", self.name, num);
+	printf("[%s] %s pps\n", self.name, num);
 	self.sent_pps = 0;
 	alarm(1);
 	signal(SIGALRM, signal_alarm);
@@ -375,21 +435,6 @@ static int enable_ring(void)
 	return 0;
 }
 
-static void ring_print(void)
-{
-	pfring_card_settings setting;
-	pfring_get_card_settings(self.rx_ring, &setting);
-
-	printf("[%s] pfring_get_mtu_size: %d\n", self.name, pfring_get_mtu_size(self.rx_ring));
-	printf("[%s] pfring_get_num_rx_channles: %d\n", self.name, pfring_get_num_rx_channels(self.rx_ring));
-	printf("[%s] pfring_get_interface_speed: %dM\n", self.name, pfring_get_interface_speed(self.rx_ring));
-	printf("[%s] pfring_get_card_setting: [max_pkt_size] %d rx_ring_slots %d [tx_ring_slots] %d\n",
-	       self.name, setting.max_packet_size, setting.rx_ring_slots, setting.tx_ring_slots);
-
-	pfring_set_promisc(self.rx_ring, 0); /* set ring no promisc??? */
-	return;
-}
-
 static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 {
 	int ret = -1;
@@ -401,11 +446,13 @@ static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 
 	if ((ret = enable_ring()) != 0) { goto L2_FORWARD_DONE; }
 
-	ring_print();
+	pfring_set_promisc(self.rx_ring, 0); /* TODO: set ring no promisc??? */
 
 	if (bind_core >= 0) { bind2core(bind_core); }
 
 	if (self.bpf_file) { if ((p = proc_init())) { proc_start(p, check_filter_by_thread, (void *) self.rx_ring); } }
+
+	if (self.debug > 0) { info_print(); }
 
 	usleep(1000 * 100);
 	signal(SIGALRM, signal_alarm);
@@ -425,31 +472,35 @@ static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 
 	while (1) {
 		void *chunk;
-		u_char *buffer;
+		u_char *pkt;
 		pfring_chunk_info chk;
 		struct pfring_pkthdr hdr;
 
-		if (self.chunk ? pfring_recv_chunk(self.rx_ring, &chunk, &chk, 1) > 0 : pfring_recv(self.rx_ring, &buffer, 0, &hdr, 1) > 0) {
+		if (pfring_recv(self.rx_ring, &pkt, 0, &hdr, 1) > 0) {
 			int rc;
 
-			if (pfring_search_payload(self.rx_ring, "\x08\x06") == 0) { /* I do not known how to use payload */
-				printf("[%s] pfring_search_payload(0806) find: ARP!\n", self.name);
-				debug_print(hdr);
-			} else if (hdr.extended_hdr.parsed_pkt.eth_type == 0x0806) { /* so, I will use packet header to check */
-				printf("[%s] pfring search eth_type(0806) find: ARP!\n", self.name);
-				debug_print(hdr);
+			if (self.debug > 0) { header_print(hdr); }
+
+			if (self.debug > 1) { parse_print(pkt, hdr); }
+
+			if (self.debug > 2) { gtp_print(hdr); }
+
+			if (self.debug > 3) {
+				payload_search(hdr);
+				printf("[%s] [trunk] %d\n", self.name, pfring_recv_chunk(self.rx_ring, &chunk, &chk, 1));
 			}
 
-			if (self.debug) { debug_print(hdr); }
+			if (0) { pkt_to_local(&hdr); }
 
-			if (self.use_pfring_send) {
-				rc = pfring_send(self.tx_ring, (char *) buffer, hdr.caplen, 1);
+			if (self.use_pfring_send) { /* pfring_send support vlan, must enable LRO, GRO, TSO */
+				rc = pfring_send(self.tx_ring, (char *) pkt, hdr.caplen, 1);
 				if (rc < 0) {
-					printf("[%s] pfring_send(caplen=%u <= l2+mtu(%u)?): %d\n", self.name, hdr.caplen, self.tx_ring->mtu, rc);
+					printf("[%s] pfring_send(caplen=%u <= l2+mtu(%u)?): %d\n",
+					       self.name, hdr.caplen, self.tx_ring->mtu, rc);
 				} else if (self.verbose) {
 					printf("[%s] %d bytes packet\n", self.name, hdr.len);
 				}
-			} else {
+			} else { /* pfring_send_last_rx_packet could not support vlan */
 				rc = pfring_send_last_rx_packet(self.rx_ring, self.tx_ifindex);
 				if (rc < 0) {
 					printf("[%s] pfring_send_last_rx_packet(): %d\n", self.name, rc);
@@ -521,7 +572,7 @@ int main(int argc, char *argv[], char **envp)
 			self.verbose = 1;
 			break;
 		case 'd':
-			self.debug = 1;
+			self.debug += 1;
 			break;
 		case 't':
 			self.chunk = 1;
@@ -538,7 +589,7 @@ int main(int argc, char *argv[], char **envp)
 	}
 
 	if(strcmp(self.dev_1, self.dev_2) == 0) {
-		printf("Pl2Forward devices must be different!\n");
+		printf("[%s] devices must be different!\n", argv[0]);
 		return -1;
 	}
 
@@ -586,11 +637,12 @@ int main(int argc, char *argv[], char **envp)
 		}
 	}
 
-	printf("Pl2Forward %s -> %s exit status: %d\n", self.dev_1, self.dev_2, self.child.status_1);
-	printf("Pl2Forward %s -> %s exit status: %d\n", self.dev_2, self.dev_1, self.child.status_2);
+	printf("[%s] %s -> %s exit status: %d\n", self.name, self.dev_1, self.dev_2, self.child.status_1);
+	printf("[%s] %s -> %s exit status: %d\n", self.name, self.dev_2, self.dev_1, self.child.status_2);
 
 	if (self.dev_1) { pfring_set_if_promisc(self.dev_1, 0); free(self.dev_1); self.dev_1 = NULL; }
 	if (self.dev_2) { pfring_set_if_promisc(self.dev_2, 0); free(self.dev_2); self.dev_2 = NULL; }
+
 	if (self.bpf_file) { free(self.bpf_file); self.bpf_file = NULL; }
 
 	return (self.child.status_1 & self.child.status_2);
