@@ -19,6 +19,8 @@ sudo modprobe pf_ring
 
 git clone https://github.com/inliniac/suricata.git
 cd suricata
+git clone https://github.com/OISF/libhtp
+./autogen.sh
 LIBS="-lrt" ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
 --enable-pfring --with-libpfring-includes=/usr/local/pfring/include \
 --with-libpfring-libraries=/usr/local/pfring/lib
@@ -26,8 +28,6 @@ make
 sudo make install
 sudo ldconfig
 
-./configure
-make
 make install-conf
 make install-rules
 
