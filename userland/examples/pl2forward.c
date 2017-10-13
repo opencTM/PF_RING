@@ -16,12 +16,13 @@
 #include <time.h>
 #include <sys/socket.h>
 
+#include "pheader.h"
 #include "pfring.h"
 #include "pfutils.c"
 #include "libproc.h"
 
-#define	MAX_PKT_LEN	1536
-#define	MAX_FILTER_LEN	1024
+#define MAX_PKT_LEN	1536
+#define MAX_FILTER_LEN	1024
 
 
 static struct SELF {
@@ -43,24 +44,27 @@ static struct SELF {
 	char *bpf_file;
 	pfring *rx_ring;
 	pfring *tx_ring;
+	pfring *lo_ring;
 
 	int rx_ifindex;
 	int tx_ifindex;
+	int lo_ifindex;
 	u_int32_t sent_pps;
 	u_int16_t watermark;
+	u_int8_t to_local;
 	u_int8_t debug;
-	u_int8_t chunk;
 	u_int8_t verbose;
 	u_int8_t reflector;
 	u_int8_t filter_type;
 	u_int8_t use_pfring_send;
 } self = {{0}, {-1, -1, -1, -1}, {0},
-	NULL, NULL, NULL, NULL, NULL,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	NULL, NULL, NULL, NULL, NULL, NULL,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 
-static void ipint_v4(const u_int32_t ipint, u_int8_t ipv4[])
+static void ipv4_int_tuple(const u_int32_t ipint, u_int8_t ipv4[])
 {
+	/* int -> tuple int */
 	ipv4[0] = (ipint >> 24) & 0xff;
 	ipv4[1] = (ipint >> 16) & 0xff;
 	ipv4[2] = (ipint >> 8) & 0xff;
@@ -68,12 +72,101 @@ static void ipint_v4(const u_int32_t ipint, u_int8_t ipv4[])
 	return;
 }
 
-static int ipstr_v4(const u_int8_t ipv4[])
+static int ipv4_tuple_int(const u_int8_t ipv4[])
 {
+	/* tuple int -> int */
 	return ((ipv4[3] & 0xff) |
 		((ipv4[2] << 8) & 0xff00) |
 		((ipv4[1] << 16) & 0xff0000) |
 		((ipv4[0] << 24) & 0xff000000));
+}
+
+static void mac_int_string(const u_int8_t mint[], u_char mac[])
+{
+	int i;
+	for (i = 0; i < ETH_LEN; i++) { mac[i] = (char) mint[i]; }
+	return;
+}
+
+static u_int32_t chksum(const u_char *buffer, const u_int nbytes, u_int32_t sum)
+{
+	int i;
+
+	for (i = 0; i < (nbytes & ~1U); i += 2) {
+		sum += (u_int16_t) ntohs(*((u_int16_t *)(buffer + i)));
+		if (sum > 0xFFFF) { sum -= 0xFFFF; }
+	}
+
+	if (i < nbytes) {
+		sum += buffer[i] << 8;
+		if (sum > 0xFFFF) { sum -= 0xFFFF; }
+	}
+
+	return sum;
+}
+
+static u_int32_t wrapsum(u_int32_t sum)
+{
+	sum = ~sum & 0xFFFF;
+	return htons(sum);
+}
+
+static u_char *gen_udp_packet(const u_char smac[],
+			      const u_char dmac[],
+			      const u_int32_t sip,
+			      const u_int32_t dip,
+			      const u_int16_t sport,
+			      const u_int16_t dport,
+			      u_int16_t pktlen)
+{
+	ticks tick = 0;
+	char *packet = NULL;
+	char *payload = NULL;
+	IP_HEADER *ip = NULL;
+	UDP_HEADER *udp = NULL;
+	ETH_HEADER *eth = NULL;
+	const size_t hdrlen = sizeof(ETH_HEADER) + sizeof(IP_HEADER) + sizeof(UDP_HEADER);
+
+	if (pktlen < hdrlen) { pktlen = 60; }
+	packet = (char *) malloc(pktlen);
+	memset(packet, 0, pktlen);
+
+	/* MAC */
+	eth = (ETH_HEADER *) &packet[0];
+	if (dmac) { memcpy(eth->dmac, dmac, ETH_LEN); }
+	if (smac) { memcpy(eth->smac, smac, ETH_LEN); }
+
+	/* TYPE IP(0800) */
+	//eth->type = TYPE_IP; /* ERROR FOR LITTLE */
+	packet[12] = 0x08;
+	packet[13] = 0x00;
+
+	/* IP */
+	ip = (IP_HEADER *) &packet[sizeof(ETH_HEADER)];
+	ip->hdrlen = 5;
+	ip->version = 4;
+	ip->tos = 0;
+	ip->pktlen = htons(pktlen - sizeof(ETH_HEADER));
+	ip->id = htons(sport);
+	ip->ttl = 64;
+	ip->offset = htons(0);
+	ip->protocol = IPPROTO_UDP;
+	ip->dip = htonl(dip);
+	ip->sip = htonl(sip);
+	ip->chksum = wrapsum(chksum((u_char *) ip, sizeof(IP_HEADER), 0));
+
+	/* UDP */
+	udp = (UDP_HEADER *) (packet + sizeof(ETH_HEADER) + sizeof(IP_HEADER));
+	udp->sport = htons(sport);
+	udp->dport = htons(dport);
+	udp->hdrlen = htons(pktlen - sizeof(ETH_HEADER) - sizeof(IP_HEADER));
+	udp->chksum = 0; /* 0 will auto compute the checksum */
+
+	/* set tick */
+	payload = packet + hdrlen;
+	tick = getticks();
+	memcpy(payload, &tick, sizeof(tick));
+	return (u_char *) packet;
 }
 
 static void help_print(const char *name)
@@ -84,8 +177,8 @@ static void help_print(const char *name)
 	printf("-v              	[Verbose]\n");
 	printf("-b			[Filter is black, default: white]\n");
 	printf("-r			[Reflector all incoming packets to another device]\n");
-	printf("-t			[Use pfring_recv_trunk() instead of pfring_recv()]\n");
 	printf("-p              	[Use pfring_send() instead of pfring_send_last_packet()]\n");
+	printf("-t			[Packet to local]\n");
 	printf("-i <device>     	[First device name]\n");
 	printf("-j <device>     	[Second device name]\n");
 	printf("-x <core_id>    	[Bind -i <device> to a core]\n");
@@ -112,11 +205,11 @@ static void info_print(void)
 static void parse_print(const u_char *pkt, const struct pfring_pkthdr hdr)
 {
 	int i = 0;
-	char buffer[4096] = {0};
+	char packet[10240] = {0}; /* TCP MAX DATA */
 
-	pfring_print_parsed_pkt(buffer, 4096, pkt, &hdr);
+	pfring_print_parsed_pkt(packet, 10240, pkt, &hdr);
 
-	printf("[%s] %s", self.name, buffer);
+	printf("[%s] %s", self.name, packet);
 
 	for (i = 0; i < hdr.caplen; i++) {
 		if (i % 0x10 == 0) { printf("0x%04x: ", i); }
@@ -127,8 +220,8 @@ static void parse_print(const u_char *pkt, const struct pfring_pkthdr hdr)
 
 		if ((i+1) % 0x10 == 0) { printf("\n"); }
 	}
-
 	printf("\n\n");
+
 	return;
 }
 
@@ -137,8 +230,8 @@ static void header_print(const struct pfring_pkthdr hdr)
 	u_int8_t src[4];
 	u_int8_t dst[4];
 
-	ipint_v4(hdr.extended_hdr.parsed_pkt.ip_src.v4, src);
-	ipint_v4(hdr.extended_hdr.parsed_pkt.ip_dst.v4, dst);
+	ipv4_int_tuple(hdr.extended_hdr.parsed_pkt.ip_src.v4, src);
+	ipv4_int_tuple(hdr.extended_hdr.parsed_pkt.ip_dst.v4, dst);
 
 	printf("[%s] [LEN] %d [TYPE] %04x [PROTO] %02x [VLAN] %02d [SMAC] %02x:%02x:%02x:%02x:%02x:%02x [SRC] %u.%u.%u.%u:%u -> [DMAC] %02x:%02x:%02x:%02x:%02x:%02x [DST] %u.%u.%u.%u:%u\n", self.name, hdr.caplen,
 	       hdr.extended_hdr.parsed_pkt.eth_type,
@@ -169,8 +262,8 @@ static void gtp_print(const struct pfring_pkthdr hdr)
 	u_int8_t gtp_src[4];
 	u_int8_t gtp_dst[4];
 
-	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_src.v4, gtp_src);
-	ipint_v4(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_dst.v4, gtp_dst);
+	ipv4_int_tuple(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_src.v4, gtp_src);
+	ipv4_int_tuple(hdr.extended_hdr.parsed_pkt.tunnel.tunneled_ip_dst.v4, gtp_dst);
 
 	printf("[%s] [GTP_ID] %08x [GTP_PROTO] %02x [GTP_SRC] %u.%u.%u.%u:%u -> [GTP_DST] %u.%u.%u.%u:%u\n",
 	       self.name,
@@ -184,25 +277,43 @@ static void gtp_print(const struct pfring_pkthdr hdr)
 	return;
 }
 
+static u_char *new_pkt_to_local(struct pfring_pkthdr hdr) {
+	u_char *packet = NULL;
+	u_char smac[ETH_LEN] = {0};
+	u_char dmac[ETH_LEN] = {0};
+	u_int8_t lo[4] = {127, 0, 0, 1};
+
+	/* change packet IP and MAC */
+	hdr.extended_hdr.parsed_pkt.dmac[0] = 0;
+	hdr.extended_hdr.parsed_pkt.dmac[1] = 0;
+	hdr.extended_hdr.parsed_pkt.dmac[2] = 0;
+	hdr.extended_hdr.parsed_pkt.dmac[3] = 0;
+	hdr.extended_hdr.parsed_pkt.dmac[4] = 0;
+	hdr.extended_hdr.parsed_pkt.dmac[5] = 0;
+	hdr.extended_hdr.parsed_pkt.ip_dst.v4 = ipv4_tuple_int(lo);
+
+	/* mac rebuild */
+	mac_int_string(hdr.extended_hdr.parsed_pkt.smac, smac);
+	mac_int_string(hdr.extended_hdr.parsed_pkt.dmac, dmac);
+
+	/* generate new packet */
+	packet = gen_udp_packet(smac, dmac,
+				hdr.extended_hdr.parsed_pkt.ip_src.v4,
+				hdr.extended_hdr.parsed_pkt.ip_dst.v4,
+				hdr.extended_hdr.parsed_pkt.l4_src_port,
+				hdr.extended_hdr.parsed_pkt.l4_dst_port,
+				60);
+	parse_print(packet, hdr);
+	return packet;
+}
+
 static void payload_search(const struct pfring_pkthdr hdr)
 {
 	if (pfring_search_payload(self.rx_ring, "\x08\x06") == 0) { /* FIXME: I do not known how to use payload */
 		printf("[%s] pfring_search_payload(0806) find: ARP!\n", self.name);
-	} else if (hdr.extended_hdr.parsed_pkt.eth_type == 0x0806) { /* so, I will use packet header to check */
+	} else if (hdr.extended_hdr.parsed_pkt.eth_type == TYPE_ARP) { /* so, I will use packet header to check */
 		printf("[%s] pfring search eth_type(0806) find: ARP!\n", self.name);
 	}
-	return;
-}
-
-static void pkt_to_local(struct pfring_pkthdr *hdr) {
-	u_int8_t lo[4] = {127, 0, 0, 1};
-	hdr->extended_hdr.parsed_pkt.dmac[0] = 0;
-	hdr->extended_hdr.parsed_pkt.dmac[1] = 0;
-	hdr->extended_hdr.parsed_pkt.dmac[2] = 0;
-	hdr->extended_hdr.parsed_pkt.dmac[3] = 0;
-	hdr->extended_hdr.parsed_pkt.dmac[4] = 0;
-	hdr->extended_hdr.parsed_pkt.dmac[5] = 0;
-	hdr->extended_hdr.parsed_pkt.ip_dst.v4 = ipstr_v4(lo);
 	return;
 }
 
@@ -414,6 +525,28 @@ static int create_tx_ring(char *dev_tx)
 	return 0;
 }
 
+static int create_lo_ring()
+{
+	/* create lo ring */
+	if (!(self.lo_ring = pfring_open("lo", MAX_PKT_LEN,
+					 PF_RING_PROMISC |
+					 PF_RING_CHUNK_MODE |
+					 PF_RING_DO_NOT_PARSE |
+					 //PF_RING_ZC_FIXED_RSS_Q_0 |
+					 //PF_RING_ZC_SYMMETRIC_RSS |
+					 PF_RING_LONG_HEADER))) {
+		printf("[%s] pfring_open('lo'): %s\n", self.name, strerror(errno));
+		return 1;
+	}
+
+	pfring_set_application_name(self.lo_ring, "pl2forward-lo");
+	pfring_set_socket_mode(self.lo_ring, send_only_mode);
+	pfring_set_tx_watermark(self.lo_ring, 0);
+	pfring_get_bound_device_ifindex(self.lo_ring, &self.lo_ifindex);
+
+	return 0;
+}
+
 static int enable_ring(void)
 {
 	/* enable socket */
@@ -427,9 +560,15 @@ static int enable_ring(void)
 			printf("[%s] unable enable tx_ring\n", self.name);
 			return 1;
 		}
+		if (pfring_enable_ring(self.lo_ring)) {
+			printf("[%s] unable enable lo_ring\n", self.name);
+			return 1;
+		}
 	} else {
 		pfring_close(self.tx_ring);
+		pfring_close(self.lo_ring);
 		self.tx_ring = NULL;
+		self.lo_ring = NULL;
 	}
 
 	return 0;
@@ -444,9 +583,11 @@ static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 
 	if ((ret = create_tx_ring(dev_tx)) != 0) { goto L2_FORWARD_DONE; }
 
+	if ((ret = create_lo_ring()) != 0) { goto L2_FORWARD_DONE; }
+
 	if ((ret = enable_ring()) != 0) { goto L2_FORWARD_DONE; }
 
-	pfring_set_promisc(self.rx_ring, 0); /* TODO: set ring no promisc??? */
+	pfring_set_promisc(self.rx_ring, 0); /* TODO: set receive ring no promisc??? */
 
 	if (bind_core >= 0) { bind2core(bind_core); }
 
@@ -471,9 +612,7 @@ static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 	}
 
 	while (1) {
-		void *chunk;
 		u_char *pkt;
-		pfring_chunk_info chk;
 		struct pfring_pkthdr hdr;
 
 		if (pfring_recv(self.rx_ring, &pkt, 0, &hdr, 1) > 0) {
@@ -486,14 +625,21 @@ static int l2_forward(char *dev_rx, char *dev_tx, const int bind_core)
 			if (self.debug > 2) { gtp_print(hdr); }
 
 			if (self.debug > 3) {
+				void *chunk;
+				pfring_chunk_info chunk_info;
 				payload_search(hdr);
-				printf("[%s] [trunk] %d\n", self.name, pfring_recv_chunk(self.rx_ring, &chunk, &chk, 1));
+				printf("[%s] [trunk] %d\n", self.name, pfring_recv_chunk(self.rx_ring, &chunk, &chunk_info, 1));
 			}
 
-			if (0) { pkt_to_local(&hdr); }
-
 			if (self.use_pfring_send) { /* pfring_send support vlan, must enable LRO, GRO, TSO */
-				rc = pfring_send(self.tx_ring, (char *) pkt, hdr.caplen, 1);
+				if (self.to_local && hdr.extended_hdr.parsed_pkt.eth_type == TYPE_IP) {
+					u_char *new = new_pkt_to_local(hdr);
+					rc = pfring_send(self.lo_ring, (char *) new, 60, 1); /* send new packet to lo */
+					free(new);
+				} else {
+					rc = pfring_send(self.tx_ring, (char *) pkt, hdr.caplen, 1);
+				}
+
 				if (rc < 0) {
 					printf("[%s] pfring_send(caplen=%u <= l2+mtu(%u)?): %d\n",
 					       self.name, hdr.caplen, self.tx_ring->mtu, rc);
@@ -526,8 +672,14 @@ L2_FORWARD_DONE:
 	if (self.rx_ring) { pfring_set_promisc(self.rx_ring, 0); pfring_close(self.rx_ring); self.rx_ring = NULL; }
 #if 1
 	if (self.tx_ring) { pfring_set_promisc(self.tx_ring, 0); pfring_close(self.tx_ring); self.tx_ring = NULL; }
+	if (self.lo_ring) { pfring_set_promisc(self.lo_ring, 0); pfring_close(self.lo_ring); self.lo_ring = NULL; }
 #else
-	if (self.use_pfring_send) { pfring_close(self.tx_ring); self.tx_ring = NULL; }
+	if (self.use_pfring_send) {
+		pfring_close(self.tx_ring);
+		pfring_close(self.lo_ring);
+		self.tx_ring = NULL;
+		self.lo_ring = NULL;
+	}
 #endif
 	return ret;
 }
@@ -575,7 +727,7 @@ int main(int argc, char *argv[], char **envp)
 			self.debug += 1;
 			break;
 		case 't':
-			self.chunk = 1;
+			self.to_local = 1;
 			break;
 		case 'w':
 			self.watermark = atoi(optarg);
