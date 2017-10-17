@@ -647,6 +647,10 @@ MYRICOM_DEP
 MOD_MYRICOM_LIB
 HAVE_MYRICOM
 MYRICOM_OBJS
+MOD_NETCOPE_LIB
+NETCOPE_DEP
+NETCOPE_OBJS
+HAVE_NETCOPE
 MOD_ACCOLADE_LIB
 ACCOLADE_DEP
 ACCOLADE_OBJS
@@ -704,7 +708,6 @@ infodir
 docdir
 oldincludedir
 includedir
-runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -778,7 +781,6 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
-runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE_TARNAME}'
@@ -1031,15 +1033,6 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
-  -runstatedir | --runstatedir | --runstatedi | --runstated \
-  | --runstate | --runstat | --runsta | --runst | --runs \
-  | --run | --ru | --r)
-    ac_prev=runstatedir ;;
-  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
-  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
-  | --run=* | --ru=* | --r=*)
-    runstatedir=$ac_optarg ;;
-
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1177,7 +1170,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir runstatedir
+		libdir localedir mandir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1330,7 +1323,6 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
-  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -3632,6 +3624,7 @@ MOD_MYRICOM_LIB="libs/libpfring_myricom_$MACHINE$LIBARCH.a"
 MOD_DAG_LIB="libs/libpfring_dag_$MACHINE$LIBARCH.a"
 MOD_FIBERBLAZE_LIB="libs/libpfring_fiberblaze_$MACHINE$LIBARCH.a"
 MOD_ACCOLADE_LIB="libs/libpfring_accolade_$MACHINE$LIBARCH.a"
+MOD_NETCOPE_LIB="libs/libpfring_netcope_$MACHINE.a" #MOD_NETCOPE_LIB="libs/libpfring_netcope_$MACHINE$LIBARCH.a"
 NPCAP_LIB="libs/libnpcap_$MACHINE$LIBARCH.a"
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for pthread_setaffinity_np in -lpthread" >&5
@@ -3833,6 +3826,10 @@ HAVE_ACCOLADE="-D HAVE_ACCOLADE"
 ACCOLADE_OBJS=`ar t lib/$MOD_ACCOLADE_LIB | grep .o\$ | tr '\n' ' '`
 ACCOLADE_DEP="extract_accolade_lib"
 
+HAVE_NETCOPE="-D HAVE_NETCOPE"
+NETCOPE_OBJS=`ar t lib/$MOD_NETCOPE_LIB | grep .o\$ | tr '\n' ' '`
+NETCOPE_DEP="extract_netcope_lib"
+
 HAVE_MYRICOM="-DHAVE_MYRICOM"
 MYRICOM_OBJS=`ar t lib/$MOD_MYRICOM_LIB | grep .o\$ | tr '\n' ' '`
 MYRICOM_DEP="extract_myricom_lib"
@@ -3993,6 +3990,10 @@ if test ".${prefix}" = ".NONE"; then
 else
    INSTALL_PREFIX=${prefix};
 fi
+
+
+
+
 
 
 
