@@ -15,6 +15,8 @@
 #include <sys/time.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <netinet/ether.h>
+#include <arpa/inet.h>
 
 #include "pheader.h"
 #include "pfring.h"
@@ -62,7 +64,7 @@ static struct SELF {
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 
-static void ipv4_int_tuple(const u_int32_t ipint, u_int8_t ipv4[])
+void __inline ipv4_int_tuple(const u_int32_t ipint, u_int8_t ipv4[])
 {
 	/* int -> tuple int */
 	ipv4[0] = (ipint >> 24) & 0xff;
@@ -72,7 +74,7 @@ static void ipv4_int_tuple(const u_int32_t ipint, u_int8_t ipv4[])
 	return;
 }
 
-static int ipv4_tuple_int(const u_int8_t ipv4[])
+u_int32_t __inline ipv4_tuple_int(const u_int8_t ipv4[])
 {
 	/* tuple int -> int */
 	return ((ipv4[3] & 0xff) |
@@ -81,7 +83,15 @@ static int ipv4_tuple_int(const u_int8_t ipv4[])
 		((ipv4[0] << 24) & 0xff000000));
 }
 
-static void mac_int_string(const u_int8_t mint[], u_char mac[])
+u_int32_t __inline ipv4_string_int(const char *ipv4)
+{
+	/* string -> int */
+	struct in_addr addr;
+	inet_pton(AF_INET, ipv4, &addr); /* _pton support ipv4 and ipv6 */
+	return ntohl(addr.s_addr);
+}
+
+void __inline mac_int_string(const u_int8_t mint[], u_char mac[])
 {
 	int i;
 	for (i = 0; i < ETH_LEN; i++) { mac[i] = (char) mint[i]; }
@@ -129,12 +139,12 @@ static u_char *gen_udp_packet(const u_char smac[],
 
 	if (pktlen < hdrlen) { pktlen = 60; }
 	packet = (char *) malloc(pktlen);
-	memset(packet, 0, pktlen);
+	bzero(packet, pktlen);
 
 	/* MAC */
 	eth = (ETH_HEADER *) &packet[0];
-	if (dmac) { memcpy(eth->dmac, dmac, ETH_LEN); }
-	if (smac) { memcpy(eth->smac, smac, ETH_LEN); }
+	if (dmac) { bcopy(dmac, eth->dmac, ETH_LEN); }
+	if (smac) { bcopy(smac, eth->smac, ETH_LEN); }
 
 	/* TYPE IP(0800) */
 	//eth->type = TYPE_IP; /* ERROR FOR LITTLE */
@@ -165,7 +175,7 @@ static u_char *gen_udp_packet(const u_char smac[],
 	/* set tick */
 	payload = packet + hdrlen;
 	tick = getticks();
-	memcpy(payload, &tick, sizeof(tick));
+	bcopy(&tick, payload, sizeof(tick));
 	return (u_char *) packet;
 }
 
@@ -216,9 +226,9 @@ static void parse_print(const u_char *pkt, const struct pfring_pkthdr hdr)
 
 		printf("%02x", pkt[i]);
 
-		if ((i+1) % 0x02 == 0) { printf(" "); }
+		if ((i + 1) % 0x02 == 0) { printf(" "); }
 
-		if ((i+1) % 0x10 == 0) { printf("\n"); }
+		if ((i + 1) % 0x10 == 0) { printf("\n"); }
 	}
 	printf("\n\n");
 
@@ -281,15 +291,13 @@ static u_char *new_pkt_to_local(struct pfring_pkthdr hdr) {
 	u_char *packet = NULL;
 	u_char smac[ETH_LEN] = {0};
 	u_char dmac[ETH_LEN] = {0};
-	u_int8_t lo[4] = {127, 0, 0, 1};
+	struct ether_addr *eth = NULL;
+	const u_int8_t lo[4] = {127, 0, 0, 1};
+	const char *addr = "00:00:00:00:00:00";
 
 	/* change packet IP and MAC */
-	hdr.extended_hdr.parsed_pkt.dmac[0] = 0;
-	hdr.extended_hdr.parsed_pkt.dmac[1] = 0;
-	hdr.extended_hdr.parsed_pkt.dmac[2] = 0;
-	hdr.extended_hdr.parsed_pkt.dmac[3] = 0;
-	hdr.extended_hdr.parsed_pkt.dmac[4] = 0;
-	hdr.extended_hdr.parsed_pkt.dmac[5] = 0;
+	eth = ether_aton(addr);
+	bcopy(eth->ether_addr_octet, hdr.extended_hdr.parsed_pkt.dmac, ETH_LEN);
 	hdr.extended_hdr.parsed_pkt.ip_dst.v4 = ipv4_tuple_int(lo);
 
 	/* mac rebuild */
@@ -385,7 +393,7 @@ static char *get_bpf_filter()
 		}
 
 		while (!feof(fp)) {
-			memset((void *) line, 0, MAX_FILTER_LEN);
+			bzero((void *) line, MAX_FILTER_LEN);
 			fgets(line, MAX_FILTER_LEN, fp);
 
 			while (line[0] && (line[strlen(line) - 1] == '\r' ||
@@ -450,7 +458,7 @@ static void *check_filter_by_thread(void *bpf_ring)
 		if (new && old && strcmp(old, new) != 0) {
 			set_bpf_filter((pfring *) bpf_ring);
 			old = realloc(old, strlen(new) + 1);
-			memset(old, 0, strlen(new) + 1);
+			bzero(old, strlen(new) + 1);
 			strcpy(old, new);
 		} else if (new && old) { /* filter has no change */
 			usleep(1000 * 10);
